@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import pandas as pd
 import pdfplumber
@@ -28,19 +29,34 @@ def load_csv_or_excel(file_path: str) -> list[str]:
     return chunks
 
 
+def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str]:
+    words = text.split()
+    chunks, i = [], 0
+    while i < len(words):
+        chunk = " ".join(words[i:i + chunk_size])
+        if chunk.strip():
+            chunks.append(chunk.strip())
+        i += chunk_size - overlap
+    return chunks
+
+
 def load_pdf(file_path: str) -> list[str]:
     chunks = []
     with pdfplumber.open(file_path) as pdf:
         for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                chunks.extend(line.strip() for line in text.split("\n") if len(line.strip()) > 20)
+            tables = page.extract_tables()
+            table_bbox_texts = set()
 
-            for table in page.extract_tables():
-                if not table:
+            for table in tables:
+                if not table or len(table) < 2:
                     continue
-                headers = [str(h).strip() for h in table[0]]
-                for row in table[1:]:
+                headers = [str(h).strip() if h else "" for h in table[0]]
+                table_rows = []
+                for row in table:
+                    row_text = " | ".join(str(c).strip() if c else "" for c in row)
+                    table_bbox_texts.add(row_text)
+                    if row == table[0]:
+                        continue
                     if not any(row):
                         continue
                     parts = [
@@ -49,7 +65,23 @@ def load_pdf(file_path: str) -> list[str]:
                         if val and str(val).strip()
                     ]
                     if parts:
-                        chunks.append(". ".join(parts) + ".")
+                        table_rows.append(". ".join(parts))
+                if table_rows:
+                    chunks.append("\n".join(table_rows))
+
+            text = page.extract_text()
+            if text:
+                paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+                if not paragraphs:
+                    paragraphs = [text.strip()]
+
+                for para in paragraphs:
+                    if para in table_bbox_texts:
+                        continue
+                    para_chunks = _chunk_text(para)
+                    for c in para_chunks:
+                        if len(c) > 2 and c not in table_bbox_texts:
+                            chunks.append(c)
     return chunks
 
 

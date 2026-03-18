@@ -47,12 +47,14 @@ def preload():
 def index_file(uploaded_file, progress_callback=None) -> dict:
     try:
         suffix = os.path.splitext(uploaded_file.name)[1]
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp_dir = tempfile.mkdtemp()
+        tmp_path = os.path.join(tmp_dir, uploaded_file.name)
+        with open(tmp_path, "wb") as tmp:
             tmp.write(uploaded_file.read())
-            tmp_path = tmp.name
 
         count = index_uploaded_file(tmp_path, progress_callback=progress_callback)
         os.unlink(tmp_path)
+        os.rmdir(tmp_dir)
         add_to_registry(uploaded_file.name, count)
         return {"success": True, "chunks": count}
     except Exception as e:

@@ -131,9 +131,17 @@ def _embed_query(query: str) -> np.ndarray:
     return _get_embedder().encode([query], convert_to_numpy=True).astype(np.float32)
 
 
+def _is_counting_query(query: str) -> bool:
+    keywords = ["how many", "count", "total", "number of", "list all", "all holidays", "how much"]
+    return any(k in query.lower() for k in keywords)
+
+
 def _retrieve(query: str, top_k: int = TOP_K) -> list[dict]:
     if _state.index is None:
         load_index()
+
+    if _is_counting_query(query):
+        return _state.docs
 
     key = _cache_key(query, top_k)
     if key in _state.retrieval_cache:
@@ -169,21 +177,31 @@ def _call_llm(prompt: str) -> str:
     return result
 
 
+def _inject_count(query: str, docs: list[dict]) -> str:
+    if not _is_counting_query(query):
+        return ""
+    month_match = re.search(
+        r"(january|february|march|april|may|june|july|august|september|october|november|december)",
+        query.lower()
+    )
+    if month_match:
+        month = month_match.group(1)
+        matching = [d for d in docs if month.lower() in d["text"].lower()]
+        return f"\n[SYSTEM COUNT] There are exactly {len(matching)} items matching '{month}' in the knowledge base.\n"
+    return f"\n[SYSTEM COUNT] Total items in knowledge base: {len(docs)}.\n"
+
+
 def chat(user_input: str, chat_history: list) -> dict:
     user_input = _validate_input(user_input)
     retrieved = _retrieve(user_input)
-    context = "\n".join([f"[{d['source']}] {d['text']}" for d in retrieved])
+    count_hint = _inject_count(user_input, retrieved)
+    context = count_hint + "\n".join([f"[{d['source']}] {d['text']}" for d in retrieved])
     sources = list({d["source"] for d in retrieved})
-
-    answer_key = _cache_key(user_input, context)
-    if answer_key in _state.response_cache:
-        return {"answer": _state.response_cache[answer_key], "sources": sources}
 
     history_text = "\n".join(
         [f"{m['role'].capitalize()}: {m['content']}" for m in chat_history[-4:]]
     )
     prompt = CHAT_PROMPT.format(context=context, chat_history=history_text, question=user_input)
     answer = _call_llm(prompt)
-    _state.response_cache[answer_key] = answer
     logger.info("Chat response generated for query: %.60s...", user_input)
     return {"answer": answer, "sources": sources}
